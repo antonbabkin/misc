@@ -1,0 +1,196 @@
+---
+title: "Marginal effects in regressions"
+format: html
+---
+
+```{r}
+#| output: false
+library(tidyverse)
+library(margins)
+library(huxtable)
+```
+
+# Overview
+
+Analytically, marginal effects are derivatives of outcome variables with respect to covariates.
+They may or may not depend on values of covariates.
+The R package [`margins`](https://cran.r-project.org/web/packages/margins/index.html) can be used to easily calculate marginal effects and their confidence intervals.
+Care must be taken when the model formula inclues variable transformations and interaction terms.
+
+Marginal effects are often used to interpret coefficients in regression models that are not linear in parameters.
+
+| model                                               | formula                           | `margins` output                                           |
+|-----------------------|----------------------------|----------------------|
+| $y = \beta_1 x_1 + \beta_2 x_2$                     | `y ~ x1 + x2`                     | $\frac{dy}{dx_1} = \beta_1$                                |
+| $y = \beta_1 x_1 + \beta_2 x_1 x_2$                 | `y ~ x1 + x1 * x2`                | $\frac{dy}{dx_1} = \beta_1 + \beta_2 x_2$                  |
+| $y = \exp(\beta_1 x_1 + \beta_2 x_2)$               | `log(y) ~ x1 + x2`                | $\frac{d\log y}{dx_1} = \beta_1$                           |
+| $y = \beta_1 \log x_1 + \beta_2 x_2$                | `y ~ log(x1) + x2`                | $\frac{dy}{dx_1} = \frac{\beta_1}{x_1}$                    |
+| $y = \exp(\beta_1 \log x_1 + \beta_2 \log x_1 x_2)$ | `log(y) ~ log(x1) + log(x1) * x2` | $\frac{d\log y}{dx_1} = \frac{\beta_1 + \beta_2 x_2}{x_1}$ |
+
+```{r}
+n <- 100
+d <- data.frame(x1 = runif(n), x2 = runif(n))
+```
+
+# simple linear model
+
+Generate $y = x_1 + x_2 + e$ and fit linear regression model.
+
+```{r}
+d <- d %>% mutate(y = x1 + x2 + rnorm(n, 0, 0.1))
+m <- lm(y ~ x1 + x2, d)
+
+# predict for different values of x1, holding x2 at mean
+d1 <- data.frame(x1 = seq(0, 1, 0.1), x2 = mean(d$x2))
+d1 <- cbind(d1, predict(m, d1, interval = "prediction"))
+
+ggplot(d1, aes(x1)) +
+  geom_point(aes(y = y), data = d) +
+  geom_line(aes(y = x1 + x2)) +
+  geom_line(aes(y = fit), color = "blue") +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.3, fill = "blue")
+```
+
+Marginal effect $\frac{dy}{dx_1}$ is independent of $x_2$.
+
+```{r}
+margins_summary(m, variables = "x1", at = list(x2 = quantile(d$x2)))
+```
+
+# interaction
+
+True model $$y = x_1 + x_1 x_2$$
+
+Marginal effect $$\frac{dy}{dx_1} = 1 + x_2$$
+
+```{r}
+d <- d %>% mutate(y = x1 + 10 * x1 * x2 + rnorm(n, 0, 0.1))
+ms <- list(
+  misspec = lm(y ~ x1 + x2, d),
+  interac = lm(y ~ x1 * x2, d)
+)
+huxreg(ms)
+```
+
+```{r}
+# predict for different values of x1, holding x2 at mean
+d1 <- data.frame(x1 = seq(0, 1, 0.1), x2 = mean(d$x2))
+d1m <- cbind(d1, predict(ms$misspec, d1, interval = "prediction"))
+d1i <- cbind(d1, predict(ms$interac, d1, interval = "prediction"))
+
+ggplot(d1, aes(x1)) +
+  geom_point(aes(y = y), data = d) +
+  geom_line(aes(y = x1 + 10 * x1 * x2)) +
+  geom_line(aes(y = fit), data = d1m, color = "red") +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), data = d1m, alpha = 0.3, fill = "red") +
+  geom_line(aes(y = fit), data = d1i, color = "blue") +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), data = d1i, alpha = 0.3, fill = "blue")
+```
+
+```{r}
+d2 <- data.frame(x2 = quantile(d$x2))
+d2m <- margins_summary(ms$misspec, variables = "x1", at = list(x2 = d2$x2))
+d2i <- margins_summary(ms$interac, variables = "x1", at = list(x2 = d2$x2))
+
+ggplot(d2, aes(x2)) +
+  geom_line(aes(y = 1 + 10*x2)) +
+  geom_line(aes(y = AME), d2m, color = "red") +
+  geom_ribbon(aes(ymin = lower, ymax = upper), d2m, fill = "red", alpha = 0.3) +
+  geom_line(aes(y = AME), d2i, color = "blue") +
+  geom_ribbon(aes(ymin = lower, ymax = upper), d2i, fill = "blue", alpha = 0.3)
+```
+
+# log(y)
+
+True model $$\log(y) = \beta_1 x_1 + \beta_2 x_2$$
+
+$$y = e^{\beta_1 x_1 + \beta_2 x_2}$$
+
+Marginal effect of $x_1$ on $\log(y)$. This is computed by `margins` for linear model expressed by formula `log(y) ~ x1 + x2`.
+
+$$\frac{d\log(y)}{dx_1} = \beta_1$$
+
+If we want marginal effect of $x_1$ on $y$, then $$\frac{d\log(y)}{dx_1} = \frac{d\log(y)}{dy}\frac{dy}{dx_1} = \frac{1}{y}\frac{dy}{dx_1}$$ $$\frac{dy}{dx_1} = \beta_1 y = \beta_1 e^{\beta_1 x_1 + \beta_2 x_2}$$
+
+```{r}
+d <- d %>% mutate(y = exp(x1 + x2 + rnorm(n, 0, 0.1)))
+ms <- list(
+  misspec = lm(y ~ x1 + x2, d),
+  logs = lm(log(y) ~ x1 + x2, d)
+)
+huxreg(ms)
+```
+
+```{r}
+# predict for different values of x1, holding x2 at mean
+d1 <- data.frame(x1 = seq(0, 1, 0.1), x2 = mean(d$x2))
+d1m <- cbind(d1, predict(ms$misspec, d1, interval = "prediction"))
+d1i <- cbind(d1, exp(predict(ms$logs, d1, interval = "prediction")))
+
+ggplot(d1, aes(x1)) +
+  geom_point(aes(y = y), data = d) +
+  geom_line(aes(y = exp(x1 + x2))) +
+  geom_line(aes(y = fit), data = d1m, color = "red") +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), data = d1m, alpha = 0.3, fill = "red") +
+  geom_line(aes(y = fit), data = d1i, color = "blue") +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), data = d1i, alpha = 0.3, fill = "blue")
+```
+
+```{r}
+d2 <- data.frame(x2 = quantile(d$x2))
+d2m <- margins_summary(ms$misspec, variables = "x1", at = list(x2 = d2$x2))
+d2i <- margins_summary(ms$logs, variables = "x1", at = list(x2 = d2$x2))
+
+rbind(d2m, d2i)
+
+```
+
+# log(x)
+
+$$y = \beta_1 \log(x_1) + \beta_2 x_2$$ 
+`margins` with model `y ~ log(x1) + x2` will compute effect of $x_1$ on $y$, which depends on $x_1$.
+
+$$\frac{dy}{dx_1} = \frac{\beta_1}{x_1}$$
+
+Effect of $\log(x_1)$ on $y$ is constant. 
+$$\frac{dy}{d\log(x_1)} = \beta_1 = \frac{dy}{dx_1} * x_1$$
+
+```{r}
+d <- d %>% mutate(y = log(x1) + x2 + rnorm(n, 0, 0.1))
+m <- lm(y ~ log(x1) + x2, d)
+margins_summary(m, variables = "x1", at = list(x1 = quantile(d$x1))) %>%
+  select(x1, AME, lower, upper) %>%
+  mutate(dy_dlogx = AME * x1)
+```
+
+
+# log(y) ~ log(x)
+
+"Log-linear model" coefficient is equivalent to elasticity.
+
+Model:
+
+$$y = \exp (\beta_1 \log x_1 + \beta_2 x_2)$$
+$$\log y = \beta_1 \log x_1 + \beta_2 x_2$$
+
+Marginal effect reported by `margins`:
+
+$$\frac{d\log y}{dx_1} = \frac{\beta_1}{x_1}$$
+
+In elasticity formulation:
+
+$$\epsilon^y_{x_1} =  \frac{dy}{y} / \frac{dx_1}{x_1} = \frac{d\log y}{dx_1}x_1 = \beta_1$$
+
+Levels derivative:
+$$\frac{dy}{dx_1}  = \beta_1 \frac{y}{x_1}$$
+
+
+```{r}
+d <- d %>% mutate(y = exp(log(x1) + x2 + rnorm(n, 0, 0.1)))
+m <- lm(log(y) ~ log(x1) + x2, d)
+margins_summary(m, variables = "x1", at = list(x1 = quantile(d$x1))) %>%
+  select(x1, AME, lower, upper) %>%
+  mutate(true_me = 1 / x1) %>%
+  mutate(dlogy_dlogx = AME * x1) %>%
+  mutate(dy_dx = AME * exp(log(x1) + mean(d$x2)) / x1)
+```
